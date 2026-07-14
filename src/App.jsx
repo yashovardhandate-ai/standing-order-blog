@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { PenSquare, ArrowLeft, X, Clock, Loader2 } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { PenSquare, ArrowLeft, ArrowRight, X, Clock, Loader2, Image as ImageIcon } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
 const FONT_LINK_ID = "dispatch-fonts";
@@ -53,7 +53,26 @@ function Ticker({ posts }) {
   );
 }
 
-function Masthead({ siteName, onCompose }) {
+function HomeScreen({ onGoToBlog }) {
+  const now = new Date();
+  const dateStr = now
+    .toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })
+    .toUpperCase();
+  return (
+    <div className="home-screen">
+      <div className="home-meta">MUMBAI · {dateStr}</div>
+      <h1 className="home-title">The Standing Order</h1>
+      <div className="home-rule" />
+      <p className="home-tagline">Dispatches on the world, the city, and everything in between.</p>
+      <button className="home-btn" onClick={onGoToBlog}>
+        Go to blog
+        <ArrowRight size={16} strokeWidth={2.2} />
+      </button>
+    </div>
+  );
+}
+
+function Masthead({ siteName, onCompose, onLogoClick }) {
   const now = new Date();
   const dateStr = now
     .toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })
@@ -67,7 +86,7 @@ function Masthead({ siteName, onCompose }) {
           New dispatch
         </button>
       </div>
-      <h1 className="masthead-title">{siteName}</h1>
+      <h1 className="masthead-title masthead-title--clickable" onClick={onLogoClick}>{siteName}</h1>
       <div className="masthead-rule" />
     </header>
   );
@@ -138,9 +157,15 @@ function PostDetail({ post, onBack }) {
       </div>
       <h1 className="post-detail-title">{post.title}</h1>
       <div className="post-detail-body">
-        {post.body.split("\n\n").map((para, i) => (
-          <p key={i}>{para}</p>
-        ))}
+        {post.body.split("\n\n").map((para, i) => {
+          const trimmed = para.trim();
+          const imageMatch = trimmed.match(/^!\[\]\((.+)\)$/);
+          if (imageMatch) {
+            return <img key={i} src={imageMatch[1]} alt="" className="post-detail-image" />;
+          }
+          if (!trimmed) return null;
+          return <p key={i}>{para}</p>;
+        })}
       </div>
     </article>
   );
@@ -154,6 +179,9 @@ function Composer({ onCancel, onSave }) {
   const [saving, setSaving] = useState(false);
   const [passOk, setPassOk] = useState(!COMPOSE_PASSPHRASE);
   const [passInput, setPassInput] = useState("");
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [imageError, setImageError] = useState(null);
+  const bodyRef = useRef(null);
 
   const canSave = title.trim() && body.trim();
 
@@ -161,15 +189,43 @@ function Composer({ onCancel, onSave }) {
     if (passInput === COMPOSE_PASSPHRASE) setPassOk(true);
   };
 
+  const handlePaste = async (e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find((item) => item.type.startsWith("image/"));
+    if (!imageItem) return;
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    setImageError(null);
+    setUploadingImage(true);
+    try {
+      const ext = file.type.split("/")[1] || "png";
+      const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const { error: uploadErr } = await supabase.storage.from("post-images").upload(path, file);
+      if (uploadErr) throw uploadErr;
+      const { data: urlData } = supabase.storage.from("post-images").getPublicUrl(path);
+      const imageMarkdown = `\n\n![](${urlData.publicUrl})\n\n`;
+      const textarea = bodyRef.current;
+      const cursor = textarea ? textarea.selectionStart : body.length;
+      const newBody = body.slice(0, cursor) + imageMarkdown + body.slice(cursor);
+      setBody(newBody);
+    } catch (err) {
+      setImageError("Couldn't upload image: " + err.message);
+    } finally {
+      setUploadingImage(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
     const words = body.trim().split(/\s+/).length;
+    const textOnly = body.replace(/!\[\]\([^)]+\)/g, "").trim();
     const newPost = {
       id: "post-" + Date.now(),
       title: title.trim(),
       category,
-      excerpt: excerpt.trim() || body.trim().slice(0, 140) + "…",
+      excerpt: excerpt.trim() || textOnly.slice(0, 140) + "…",
       body: body.trim(),
       date: new Date().toISOString().slice(0, 10),
       read_mins: Math.max(1, Math.round(words / 200)),
@@ -246,15 +302,23 @@ function Composer({ onCancel, onSave }) {
         onChange={(e) => setExcerpt(e.target.value)}
       />
 
-      <label className="field-label" htmlFor="c-body">Dispatch</label>
+      <label className="field-label" htmlFor="c-body">
+        Dispatch <span className="field-hint"><ImageIcon size={11} strokeWidth={2.2} /> paste an image to insert it inline</span>
+      </label>
       <textarea
         id="c-body"
+        ref={bodyRef}
         className="field-textarea"
-        placeholder="Write the piece. Separate paragraphs with a blank line."
+        placeholder="Write the piece. Separate paragraphs with a blank line. You can paste an image directly into this box."
         value={body}
         onChange={(e) => setBody(e.target.value)}
+        onPaste={handlePaste}
         rows={12}
       />
+      {uploadingImage && (
+        <p className="upload-status"><Loader2 size={12} className="spin" /> Uploading image…</p>
+      )}
+      {imageError && <p className="upload-status upload-status--error">{imageError}</p>}
 
       <div className="composer-actions">
         <button className="btn-secondary" onClick={onCancel} type="button">
@@ -275,7 +339,7 @@ export default function App() {
   }, []);
 
   const [posts, setPosts] = useState(null);
-  const [view, setView] = useState("list");
+  const [view, setView] = useState("home");
   const [selectedPost, setSelectedPost] = useState(null);
   const [filter, setFilter] = useState("all");
   const [error, setError] = useState(null);
@@ -362,6 +426,10 @@ export default function App() {
         .post-detail-meta { display: flex; align-items: center; gap: 12px; margin-bottom: 1rem; flex-wrap: wrap; }
         .post-detail-title { font-family: 'Fraunces', serif; font-weight: 700; font-size: clamp(1.9rem, 5vw, 2.6rem); line-height: 1.08; margin: 0 0 1.75rem; letter-spacing: -0.01em; }
         .post-detail-body p { font-size: 17px; line-height: 1.75; color: #2a2720; margin: 0 0 1.3rem; }
+        .post-detail-image { width: 100%; height: auto; border-radius: 4px; margin: 0.5rem 0 1.5rem; display: block; }
+        .field-hint { display: inline-flex; align-items: center; gap: 4px; font-weight: 400; text-transform: none; letter-spacing: 0; color: #8a8474; margin-left: 8px; font-size: 10.5px; }
+        .upload-status { display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #6B6558; margin: 6px 0 0; }
+        .upload-status--error { color: #a83030; }
         .composer { max-width: 640px; margin: 2rem auto 0; padding: 0 1.5rem; }
         .composer-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; }
         .composer-title { font-family: 'Fraunces', serif; font-weight: 600; font-size: 1.7rem; margin: 0; }
@@ -383,13 +451,24 @@ export default function App() {
         @keyframes spin { to { transform: rotate(360deg); } }
         .error-banner { max-width: 640px; margin: 1rem auto 0; padding: 0.6rem 1rem; background: #f6dede; border: 1px solid #c98c8c; border-radius: 4px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #7a2e2e; }
         .loading-state { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 4rem 1rem; color: #6B6558; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
+        .home-screen { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 2rem 1.5rem; animation: home-fade-in 0.6s ease; }
+        @keyframes home-fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .home-meta { font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; color: #6B6558; margin-bottom: 1.2rem; }
+        .home-title { font-family: 'Fraunces', serif; font-weight: 600; font-size: clamp(2.6rem, 9vw, 4.6rem); line-height: 1; margin: 0; letter-spacing: -0.015em; }
+        .home-rule { width: 72px; height: 2px; background: #1C2541; margin: 1.4rem 0 1.3rem; }
+        .home-tagline { font-size: 16.5px; color: #4a463d; max-width: 40ch; margin: 0 0 2rem; line-height: 1.5; }
+        .home-btn { display: inline-flex; align-items: center; gap: 8px; background: #1C2541; color: #F2EFE9; border: none; border-radius: 4px; padding: 12px 22px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.04em; cursor: pointer; transition: background 0.15s ease, transform 0.15s ease; }
+        .home-btn:hover { background: #2a3660; transform: translateY(-2px); }
+        .masthead-title--clickable { cursor: pointer; }
       `}</style>
 
-      {view !== "post" && !loading && <Ticker posts={posts} />}
+      {view !== "post" && view !== "home" && !loading && <Ticker posts={posts} />}
+
+      {view === "home" && <HomeScreen onGoToBlog={() => setView("list")} />}
 
       {view === "list" && (
         <>
-          <Masthead siteName="The Standing Order" onCompose={() => setView("compose")} />
+          <Masthead siteName="The Standing Order" onCompose={() => setView("compose")} onLogoClick={() => setView("home")} />
           {error && <div className="error-banner">{error}</div>}
           {loading ? (
             <div className="loading-state">
